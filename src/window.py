@@ -1,7 +1,6 @@
 import moderngl
 import pyglet
 
-
 class Window(pyglet.window.Window):
     def __init__(self, width, height, title):
         super().__init__(width, height, title, resizable=True)
@@ -11,6 +10,7 @@ class Window(pyglet.window.Window):
 
     def set_scene(self, scene):
         self.scene = scene
+        scene.start()  # Llamar a start() cuando se asigna la escena
 
     def on_draw(self):  # se ejecuta por cada frame
         self.clear()
@@ -18,13 +18,13 @@ class Window(pyglet.window.Window):
         if self.scene:
             self.scene.render()
 
-    def update(self, dt):  # se ejecuta automáticamente por Pyglet
-        if self.scene:
-            self.scene.update(dt)
-
-    def on_resize(self, width, height):
-        if self.scene:
-            self.scene.on_resize(width, height)
-
     def run(self):  # activar el loop de la ventana
         pyglet.app.run()
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        if self.scene is None:
+            return
+        # Convertir posición del mouse a u,v [0,1]
+        u = x / self.width
+        v = y / self.height
+        self.scene.on_mouse_click(u, v)

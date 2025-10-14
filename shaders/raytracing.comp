@@ -1,0 +1,201 @@
+#version 430
+
+// ------------------------------------------------------
+// Configuración inicial del compute shader
+// ------------------------------------------------------
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Imagen de salida (RGBA flotante)
+layout(rgba32f, binding = 0) uniform image2D outputImage;
+
+// ------------------------------------------------------
+// Buffers de datos (SSBOs)
+// ------------------------------------------------------
+layout(std430, binding = 0) buffer Models { mat4 modelMatrices[]; };
+layout(std430, binding = 1) buffer InvModels { mat4 inverseModelMatrices[]; };
+layout(std430, binding = 2) buffer Materials { vec4 materialData[]; };
+layout(std430, binding = 3) buffer BVH { vec4 bvhNodes[]; };
+
+// ------------------------------------------------------
+// Uniforms de cámara y escena
+// ------------------------------------------------------
+uniform vec3 cameraPosition;
+uniform mat4 inverseViewMatrix;
+uniform float fieldOfView;
+
+// ------------------------------------------------------
+// Constantes
+// ------------------------------------------------------
+const float EPS = 1e-4;
+const vec3 LIGHT_DIRECTION = normalize(vec3(0.5, 1.0, 0.1));
+const vec3 LIGHT_COLOR = vec3(1.0);
+const float SPECULAR_POWER = 64.0;
+
+// ------------------------------------------------------
+// Estructura de resultados de intersección
+// ------------------------------------------------------
+struct RayHit {
+    bool didHit;
+    float distance;
+    vec3 position;
+    vec3 normal;
+    vec3 color;
+    float reflectivity;
+};
+
+// ------------------------------------------------------
+// Intersección con AABB
+// ------------------------------------------------------
+bool intersectAxisAlignedBox(vec3 rayOrigin, vec3 rayDirection,
+                             vec3 boxMin, vec3 boxMax,
+                             out float timeNear, out float timeFar)
+{
+    vec3 tMin = (boxMin - rayOrigin) / rayDirection;
+    vec3 tMax = (boxMax - rayOrigin) / rayDirection;
+    vec3 t1 = min(tMin, tMax);
+    vec3 t2 = max(tMin, tMax);
+    timeNear = max(max(t1.x, t1.y), t1.z);
+    timeFar  = min(min(t2.x, t2.y), t2.z);
+    return timeFar >= max(timeNear, 0.0);
+}
+
+// ------------------------------------------------------
+// Intersección con OBB
+// ------------------------------------------------------
+bool intersectOrientedBox(int objectIndex, vec3 rayOriginWorld, vec3 rayDirectionWorld,
+                          out float hitDistance, out vec3 hitPosition, out vec3 hitNormal)
+{
+    mat4 invT = inverseModelMatrices[objectIndex];
+    vec3 roLocal = (invT * vec4(rayOriginWorld, 1.0)).xyz;
+    vec3 rdLocal = normalize((invT * vec4(rayDirectionWorld, 0.0)).xyz);
+
+    float tNear, tFar;
+    if (!intersectAxisAlignedBox(roLocal, rdLocal, vec3(-1.0), vec3(1.0), tNear, tFar))
+        return false;
+
+    float t = (tNear > EPS) ? tNear : tFar;
+    vec3 hitLocal = roLocal + rdLocal * t;
+
+    vec3 distPos = abs(hitLocal - vec3(1.0));
+    vec3 distNeg = abs(hitLocal + vec3(1.0));
+    vec3 minDist = min(distPos, distNeg);
+    float closest = min(min(minDist.x, minDist.y), minDist.z);
+
+    vec3 nLocal = vec3(0.0);
+    if (minDist.x == closest) nLocal = vec3(sign(hitLocal.x), 0.0, 0.0);
+    else if (minDist.y == closest) nLocal = vec3(0.0, sign(hitLocal.y), 0.0);
+    else nLocal = vec3(0.0, 0.0, sign(hitLocal.z));
+
+    mat3 normalMatrix = transpose(inverse(mat3(modelMatrices[objectIndex])));
+    hitNormal = normalize(normalMatrix * nLocal);
+    hitPosition = (modelMatrices[objectIndex] * vec4(hitLocal, 1.0)).xyz;
+    hitDistance = dot(hitPosition - rayOriginWorld, rayDirectionWorld);
+
+    return hitDistance > EPS;
+}
+
+// ------------------------------------------------------
+// Recorrido BVH
+// ------------------------------------------------------
+RayHit traverseBoundingVolumeHierarchy(vec3 rayOrigin, vec3 rayDirection)
+{
+    RayHit closest;
+    closest.didHit = false;
+    closest.distance = 1e20;
+
+    int stack[32];
+    int sp = 0;
+    stack[sp++] = 0;
+
+    while (sp > 0) {
+        int nodeIndex = stack[--sp];
+        vec4 minBB = bvhNodes[nodeIndex];
+        vec4 maxBB = bvhNodes[nodeIndex + 1];
+
+        float tNear, tFar;
+        if (!intersectAxisAlignedBox(rayOrigin, rayDirection, minBB.xyz, maxBB.xyz, tNear, tFar))
+            continue;
+        if (tNear >= closest.distance) continue;
+
+        int left = int(minBB.w);
+        int rightOrPrim = int(maxBB.w);
+
+        if (rightOrPrim >= 0) {
+            float dist; vec3 pos, norm;
+            if (intersectOrientedBox(rightOrPrim, rayOrigin, rayDirection, dist, pos, norm) && dist < closest.distance) {
+                closest.didHit = true;
+                closest.distance = dist;
+                closest.position = pos;
+                closest.normal = norm;
+                vec4 mat = materialData[rightOrPrim];
+                closest.color = mat.rgb;
+                closest.reflectivity = mat.a;
+            }
+        } else {
+            if (left >= 0) stack[sp++] = left * 2;
+            int right = -rightOrPrim - 2;
+            if (right >= 0) stack[sp++] = right * 2;
+        }
+    }
+    return closest;
+}
+
+// ------------------------------------------------------
+// Cálculo de sombras
+// ------------------------------------------------------
+float calculateShadow(vec3 surfacePosition, vec3 surfaceNormal)
+{
+    vec3 origin = surfacePosition + surfaceNormal * EPS;
+    bool blocked = traverseBoundingVolumeHierarchy(origin, LIGHT_DIRECTION).didHit;
+    return blocked ? 0.3 : 1.0;
+}
+
+// ------------------------------------------------------
+// Cálculo de iluminación Blinn–Phong completo
+// ------------------------------------------------------
+vec3 calculateShading(vec3 surfaceColor, vec3 surfacePosition, vec3 surfaceNormal, vec3 viewDirection)
+{
+    float diffuseIntensity = max(dot(surfaceNormal, LIGHT_DIRECTION), 0.0);
+    float specularIntensity = pow(max(dot(normalize(LIGHT_DIRECTION + viewDirection), surfaceNormal), 0.0), SPECULAR_POWER);
+    float ambientFactor = 0.08;
+    float shadowFactor = calculateShadow(surfacePosition, surfaceNormal);
+
+    vec3 ambient = ambientFactor * surfaceColor;
+    vec3 diffuse = diffuseIntensity * surfaceColor * LIGHT_COLOR;
+    vec3 specular = specularIntensity * LIGHT_COLOR;
+    vec3 shadow = shadowFactor * (diffuse + specular);
+
+    vec3 shadedColor = ambient + shadow;
+    return shadedColor;
+}
+
+// ------------------------------------------------------
+// MAIN
+// ------------------------------------------------------
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputImage);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    float fovAdjust = tan(radians(fieldOfView) * 0.5);
+    float aspect = float(size.x) / float(size.y);
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec2 ndc = (uv * 2.0 - 1.0) * fovAdjust;
+    ndc.x *= aspect;
+
+    vec3 rayDirCam = normalize(vec3(ndc.x, ndc.y, -1.0));
+    vec3 rayDir = normalize((inverseViewMatrix * vec4(rayDirCam, 0.0)).xyz);
+    vec3 rayOrigin = (inverseViewMatrix * vec4(cameraPosition, 1.0)).xyz;
+
+    RayHit hit = traverseBoundingVolumeHierarchy(rayOrigin, rayDir);
+    vec3 finalColor;
+
+    if (hit.didHit) {
+        finalColor = calculateShading(hit.color, hit.position, hit.normal, -rayDir);
+    } else {
+        finalColor = vec3(0.0);
+    }
+
+    imageStore(outputImage, pixel, vec4(finalColor, 1.0));
+}

@@ -1,15 +1,13 @@
-# cube.py
-# Clase Cube con soporte para animación y AABB dinámico.
-# El parámetro 'animated' permite filtrar qué objetos se animan en la escena.
-# La propiedad 'aabb' calcula el bounding box actualizado del objeto en cada momento.
+# quad.py
+# Clase Quad con soporte para animación y AABB dinámico.
 
 from model import Model
 from hit import HitBoxOBB
 import numpy as np
 import glm
 
-class Cube(Model):
-    def __init__(self, position=(0,0,0), rotation=(0,0,0), scale=(1,1,1), name="cube", animated=True, hittable=True):
+class Quad(Model):
+    def __init__(self, position=(0,0,0), rotation=(0,0,0), scale=(1,1,1), name="quad", animated=True, hittable=True):
         self.name = name
         self.position = glm.vec3(*position)
         self.rotation = glm.vec3(*rotation)
@@ -22,57 +20,53 @@ class Cube(Model):
             hittable=hittable
         )
 
-        # --- Vértices del cubo ---
+        # --- Vértices del Quad ---
         vertices = np.array([
-            -1, -1, -1,  1, -1, -1,  1,  1, -1,  -1,  1, -1,
-            -1, -1,  1,  1, -1,  1,  1,  1,  1,  -1,  1,  1,
+            -1, -1, 0,
+             1, -1, 0,
+             1,  1, 0,
+            -1,  1, 0,
         ], dtype='f4')
 
         # Guardar vértices originales para calcular AABB
         self.__vertices = vertices
 
-        # --- Colores ---
         colors = np.array([
-            1, 0, 0,  0, 1, 0,  0, 0, 1,  1, 1, 0,
-            1, 0, 1,  0, 1, 1,  1, 1, 1,  0, 0, 0,
+            0,1,1,
+            0,0,1,
+            1,0,1,
+            1,1,0,
         ], dtype='f4')
 
-        # --- Normales ---
-        normals = np.array([
-            -1, -1, -1,  1, -1, -1,  1,  1, -1,  -1,  1, -1,
-            -1, -1,  1,  1, -1,  1,  1,  1,  1,  -1,  1,  1,
-        ], dtype='f4')
-
-        # --- Texcoords ---
         texcoords = np.array([
-            0, 0,  1, 0,  1, 1,  0, 1,
-            0, 0,  1, 0,  1, 1,  0, 1,
+            0, 0,
+            1, 0,
+            1, 1,
+            0, 1,
         ], dtype='f4')
 
-        # --- Índices ---
-        indices = np.array([
-            0,1,2, 2,3,0, 4,5,6, 6,7,4,
-            0,4,7, 7,3,0, 1,5,6, 6,2,1,
-            3,2,6, 6,7,3, 0,1,5, 5,4,0
-        ], dtype='i4')
+        normals = np.array([
+            0, 0, 1,
+            0, 0, 1,
+            0, 0, 1,
+            0, 0, 1,
+        ], dtype='f4')
 
-        super().__init__(vertices, indices, colors, normals, texcoords)
+        indices = np.array([0, 1, 2, 2, 3, 0], dtype='i4')
+
+        super().__init__(vertices, indices, colors=colors, texcoords=texcoords, normals=normals)
 
     @property
     def aabb(self):
-        # Calcula el AABB (Axis-Aligned Bounding Box) actualizado del objeto
-        # Reorganiza vértices como vectores (x, y, z)
+        # Calcula el AABB actualizado del Quad
         verts3 = self.__vertices.reshape(-1, 3)
         
-        # Transforma cada vértice por la matriz de modelo
         pts = [self.get_model_matrix() * glm.vec4(v[0], v[1], v[2], 1.0) for v in verts3]
         
-        # Extrae coordenadas x, y, z por separado
         xs = [p.x for p in pts]
         ys = [p.y for p in pts]
         zs = [p.z for p in pts]
         
-        # Devuelve (min, max) para cada eje
         return (glm.vec3(min(xs), min(ys), min(zs)),
                 glm.vec3(max(xs), max(ys), max(zs)))
 
