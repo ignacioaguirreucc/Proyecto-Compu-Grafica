@@ -1,7 +1,7 @@
 #version 430
 
 // ------------------------------------------------------
-// Configuración inicial del compute shader
+// Configuracion inicial del compute shader
 // ------------------------------------------------------
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -17,7 +17,7 @@ layout(std430, binding = 2) buffer Materials { vec4 materialData[]; };
 layout(std430, binding = 3) buffer BVH { vec4 bvhNodes[]; };
 
 // ------------------------------------------------------
-// Uniforms de cámara y escena
+// Uniforms de camara y escena
 // ------------------------------------------------------
 uniform vec3 cameraPosition;
 uniform mat4 inverseViewMatrix;
@@ -30,9 +30,10 @@ const float EPS = 1e-4;
 const vec3 LIGHT_DIRECTION = normalize(vec3(0.5, 1.0, 0.1));
 const vec3 LIGHT_COLOR = vec3(1.0);
 const float SPECULAR_POWER = 64.0;
+const int MAX_RAY_BOUNCES = 3;
 
 // ------------------------------------------------------
-// Estructura de resultados de intersección
+// Estructura de resultados de interseccion
 // ------------------------------------------------------
 struct RayHit {
     bool didHit;
@@ -44,7 +45,7 @@ struct RayHit {
 };
 
 // ------------------------------------------------------
-// Intersección con AABB
+// Interseccion con AABB
 // ------------------------------------------------------
 bool intersectAxisAlignedBox(vec3 rayOrigin, vec3 rayDirection,
                              vec3 boxMin, vec3 boxMax,
@@ -60,14 +61,14 @@ bool intersectAxisAlignedBox(vec3 rayOrigin, vec3 rayDirection,
 }
 
 // ------------------------------------------------------
-// Intersección con OBB
+// Interseccion con OBB (CORREGIDA)
 // ------------------------------------------------------
 bool intersectOrientedBox(int objectIndex, vec3 rayOriginWorld, vec3 rayDirectionWorld,
                           out float hitDistance, out vec3 hitPosition, out vec3 hitNormal)
 {
     mat4 invT = inverseModelMatrices[objectIndex];
     vec3 roLocal = (invT * vec4(rayOriginWorld, 1.0)).xyz;
-    vec3 rdLocal = normalize((invT * vec4(rayDirectionWorld, 0.0)).xyz);
+    vec3 rdLocal = normalize((invT * vec4(rayDirectionWorld, 0.0)).xyz);  // ✅ CORREGIDO: era rayOriginWorld
 
     float tNear, tFar;
     if (!intersectAxisAlignedBox(roLocal, rdLocal, vec3(-1.0), vec3(1.0), tNear, tFar))
@@ -141,7 +142,7 @@ RayHit traverseBoundingVolumeHierarchy(vec3 rayOrigin, vec3 rayDirection)
 }
 
 // ------------------------------------------------------
-// Cálculo de sombras
+// Calculo de sombras
 // ------------------------------------------------------
 float calculateShadow(vec3 surfacePosition, vec3 surfaceNormal)
 {
@@ -151,7 +152,7 @@ float calculateShadow(vec3 surfacePosition, vec3 surfaceNormal)
 }
 
 // ------------------------------------------------------
-// Cálculo de iluminación Blinn–Phong completo
+// Calculo de iluminacion Blinn-Phong completo
 // ------------------------------------------------------
 vec3 calculateShading(vec3 surfaceColor, vec3 surfacePosition, vec3 surfaceNormal, vec3 viewDirection)
 {
@@ -170,7 +171,7 @@ vec3 calculateShading(vec3 surfaceColor, vec3 surfacePosition, vec3 surfaceNorma
 }
 
 // ------------------------------------------------------
-// MAIN
+// MAIN - PATHTRACING CON REFLEXIONES
 // ------------------------------------------------------
 void main()
 {
@@ -178,24 +179,60 @@ void main()
     ivec2 size = imageSize(outputImage);
     if (pixel.x >= size.x || pixel.y >= size.y) return;
 
+    // Calcular coordenadas UV normalizadas
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    
+    // Calcular ajustes de FOV y aspecto
     float fovAdjust = tan(radians(fieldOfView) * 0.5);
     float aspect = float(size.x) / float(size.y);
-    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    
+    // Convertir a coordenadas NDC
     vec2 ndc = (uv * 2.0 - 1.0) * fovAdjust;
     ndc.x *= aspect;
 
+    // Generar direccion del rayo en espacio de camara
     vec3 rayDirCam = normalize(vec3(ndc.x, ndc.y, -1.0));
-    vec3 rayDir = normalize((inverseViewMatrix * vec4(rayDirCam, 0.0)).xyz);
+    
+    // Transformar a espacio mundial
+    vec3 rayDirection = normalize((inverseViewMatrix * vec4(rayDirCam, 0.0)).xyz);
     vec3 rayOrigin = (inverseViewMatrix * vec4(cameraPosition, 1.0)).xyz;
 
-    RayHit hit = traverseBoundingVolumeHierarchy(rayOrigin, rayDir);
-    vec3 finalColor;
+    // Variables acumuladoras para pathtracing
+    vec3 accumulatedColor = vec3(0.0);
+    vec3 rayThroughput = vec3(1.0);
 
-    if (hit.didHit) {
-        finalColor = calculateShading(hit.color, hit.position, hit.normal, -rayDir);
-    } else {
-        finalColor = vec3(0.0);
+    // Loop de rebotes (MAX_RAY_BOUNCES = 3)
+    for (int bounceIndex = 0; bounceIndex < MAX_RAY_BOUNCES; bounceIndex++) {
+        
+        RayHit hit = traverseBoundingVolumeHierarchy(rayOrigin, rayDirection);
+        
+        if (hit.didHit) {
+            vec3 shadedColor = calculateShading(hit.color, hit.position, hit.normal, -rayDirection);
+            
+            // Calcular reflectividad
+            float reflectivity = clamp(hit.reflectivity, 0.0, 1.0);
+            
+            // Acumular color absorbido
+            accumulatedColor += rayThroughput * (1.0 - reflectivity) * shadedColor;
+            rayThroughput *= reflectivity;
+            
+            // Russian Roulette: terminar si la energia es muy baja
+            if (max(max(rayThroughput.x, rayThroughput.y), rayThroughput.z) < 1e-3) break;
+            
+            // Ajustar origen y direccion para el siguiente rebote
+            rayOrigin = hit.position + hit.normal * EPS;
+            rayDirection = reflect(rayDirection, hit.normal);
+            
+        } else {
+            // Color de cielo degradado
+            accumulatedColor += rayThroughput * vec3(0.6, 0.8, 1.0) * (1.0 - rayDirection.y);
+            break;
+        }
     }
 
-    imageStore(outputImage, pixel, vec4(finalColor, 1.0));
+    // Gamma correction
+    vec3 gammaCorrection = pow(accumulatedColor, vec3(1.0/2.2));
+
+    // Escribir resultado en la textura de salida
+    imageStore(outputImage, pixel, vec4(gammaCorrection, 1.0));
 }

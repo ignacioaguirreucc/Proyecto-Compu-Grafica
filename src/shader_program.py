@@ -8,10 +8,10 @@ import glm
 
 class ShaderProgram:
     def __init__(self, ctx, vertex_shader_path, fragment_shader_path):
-        # Leer y compilar los shaders desde archivos
-        with open(vertex_shader_path) as file:
+        # Leer y compilar los shaders desde archivos con UTF-8
+        with open(vertex_shader_path, encoding='utf-8') as file:
             vertex_shader = file.read()
-        with open(fragment_shader_path) as file:
+        with open(fragment_shader_path, encoding='utf-8') as file:
             fragment_shader = file.read()
         
         # Crear el programa de shaders
@@ -44,8 +44,8 @@ class ShaderProgram:
 
 class ComputeShaderProgram:
     def __init__(self, ctx, compute_shader_path):
-        # Leer el compute shader desde archivo
-        with open(compute_shader_path) as file:
+        # Leer el compute shader desde archivo con UTF-8
+        with open(compute_shader_path, encoding='utf-8') as file:
             compute_source = file.read()
         
         # Crear el programa de compute shader

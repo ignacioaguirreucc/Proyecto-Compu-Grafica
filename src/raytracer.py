@@ -1,9 +1,10 @@
 # raytracer.py
 # RayTracer en CPU y GPU: versión completa con compute shader configurado.
 
-from texture import Texture
+from texture import Texture, ImageData
 from shader_program import ComputeShaderProgram
 from bvh import BVH
+import numpy as np
 
 
 # ============================================================
@@ -65,13 +66,20 @@ class RayTracerGPU:
         self.compute_shader = ComputeShaderProgram(self.ctx, "shaders/raytracing.comp")
         
         # -------------------------------
-        # Crear y vincular textura de salida
+        # Crear y vincular textura de salida EN FLOAT32
         # -------------------------------
         self.texture_unit = 0
-        # Crear textura RGBA de salida
-        self.output_texture = Texture("u_texture", self.width, self.height, 4, None, (255, 255, 255, 255))
+        
+        # CRITICO: Crear textura con datos float32 para rgba32f
+        float_data = np.zeros((self.height, self.width, 4), dtype=np.float32)
+        image_data_float = ImageData.__new__(ImageData)
+        image_data_float.data = float_data
+        
+        self.output_texture = Texture("u_texture", self.width, self.height, 4, image_data_float, (0, 0, 0, 0))
+        
         # Pasar la textura al quad para renderizado
         self.output_graphics.update_texture("u_texture", self.output_texture.image_data)
+        
         # Vincular como image2D para escritura del compute shader
         self.output_graphics.bind_to_image("u_texture", self.texture_unit, read=False, write=True)
 
@@ -85,7 +93,13 @@ class RayTracerGPU:
     def resize(self, width, height):
         """Recalcula el tamaño de la textura al redimensionar la ventana."""
         self.width, self.height = width, height
-        self.output_texture = Texture("u_texture", width, height, 4, None, (255, 255, 255, 255))
+        
+        # Recrear textura float32
+        float_data = np.zeros((self.height, self.width, 4), dtype=np.float32)
+        image_data_float = ImageData.__new__(ImageData)
+        image_data_float.data = float_data
+        
+        self.output_texture = Texture("u_texture", width, height, 4, image_data_float, (0, 0, 0, 0))
         self.output_graphics.update_texture("u_texture", self.output_texture.image_data)
         self.output_graphics.bind_to_image("u_texture", self.texture_unit, read=False, write=True)
 
@@ -112,6 +126,11 @@ class RayTracerGPU:
     # -------------------------------
     def run(self):
         """Ejecuta el compute shader para renderizar en GPU."""
+        # Actualizar uniforms de la cámara en cada frame
+        self.compute_shader.set_uniform("cameraPosition", self.camera.position)
+        self.compute_shader.set_uniform("inverseViewMatrix", self.camera.get_inverse_view_matrix())
+        self.compute_shader.set_uniform("fieldOfView", self.camera.fov)
+        
         groups_x = (self.width + 15) // 16
         groups_y = (self.height + 15) // 16
 

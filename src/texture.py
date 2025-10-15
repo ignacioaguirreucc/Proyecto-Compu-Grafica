@@ -53,4 +53,6 @@ class Texture:
 
     def get_bytes(self):
         """Devuelve los bytes listos para subir a GPU."""
-        return self.__image_data.tobytes()
+        # CRITICO: Usar tobytes() directamente del array NumPy
+        # Esto maneja correctamente tanto uint8 como float32
+        return self.__image_data.data.tobytes()

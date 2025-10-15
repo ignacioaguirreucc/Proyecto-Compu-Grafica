@@ -63,13 +63,35 @@ class Graphics:
         return textures
     
     def update_texture(self, texture_name, new_data):
-        """Actualiza textura existente con nuevos datos (para raytracing en CPU)."""
+        """Actualiza textura existente con nuevos datos (para raytracing en CPU/GPU)."""
         if texture_name not in self.__textures:
             raise ValueError(f"No existe la textura {texture_name}")
         
         texture_obj, texture_ctx = self.__textures[texture_name]
         texture_obj.update_data(new_data)
-        texture_ctx.write(texture_obj.get_bytes())
+        
+        # CRITICO: Recrear la textura si los tipos de datos son diferentes
+        np_data = texture_obj.image_data.data
+        size = texture_obj.size
+        channels = texture_obj.channels_amount
+        
+        # Determinar tipo de dato y recrear textura
+        if np_data.dtype == np.float32:
+            new_texture_ctx = self.__ctx.texture(size, channels, np_data.tobytes(), dtype='f4')
+        else:
+            new_texture_ctx = self.__ctx.texture(size, channels, np_data.tobytes())
+        
+        # Configurar repetición y mipmaps
+        if texture_obj.build_mipmaps:
+            new_texture_ctx.build_mipmaps()
+        new_texture_ctx.repeat_x = texture_obj.repeat_x
+        new_texture_ctx.repeat_y = texture_obj.repeat_y
+        
+        # Liberar la textura antigua
+        texture_ctx.release()
+        
+        # Actualizar la referencia
+        self.__textures[texture_name] = (texture_obj, new_texture_ctx)
 
     def bind_to_image(self, name="u_texture", unit=0, read=False, write=True):
         """
